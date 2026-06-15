@@ -1,6 +1,5 @@
 import express from 'express';
 import Database from 'better-sqlite3';
-
 const app = express();
 
 app.use(express.json());
@@ -114,22 +113,54 @@ app.get('/api/v1/clients/:id', (req, res) => {
  *      priority (optional): integer,
  *
  */
+//PUT: pass every value in body, not only the adjusted value
 app.put('/api/v1/clients/:id', (req, res) => {
   const id = parseInt(req.params.id , 10);
   const { valid, messageObj } = validateId(id);
   if (!valid) {
     res.status(400).send(messageObj);
   }
-
-  let { status, priority } = req.body;
+  let { status, priority } = req.query;
+  const statuses = ['backlog', 'in-progress', 'complete'];
+  if(status && !statuses.includes(status)){
+    return res.status(400).send({
+      'message': 'Invalid status provided.',
+      'long_message': 'Status can only be one of the following: [backlog | in-progress | complete].',
+    });
+  }
+  priority = parseInt(priority, 10);
+  const priorityValidation = validatePriority(priority);
+  const priorityValid = priorityValidation.valid;
+  const priorityMessageObj = priorityValidation.messageObj;
+  if(priority !== undefined && priority !== null && !priorityValid){
+    return res.status(400).send(priorityMessageObj);
+  }
   let clients = db.prepare('select * from clients').all();
   const client = clients.find(client => client.id === id);
-
+  const currentClientStatus = client["status"];
+  if(!status) status = currentClientStatus;
+  const currentClientPriority = client["priority"];
+  if(!priority) priority = currentClientPriority;
+  //CASE 1: same status, different priority
+  if(priority && (!status || currentClientStatus === status)){
+    if(priority < currentClientPriority) {
+      // Moving up in priority: increment clients in range
+      db.prepare(`UPDATE clients SET priority = priority + 1 WHERE status = ? AND priority >= ? AND priority < ?`).run(currentClientStatus, priority, currentClientPriority);
+    } else if(priority > currentClientPriority) {
+      // Moving down in priority: decrement clients in range
+      db.prepare(`UPDATE clients SET priority = priority - 1 WHERE status = ? AND priority > ? AND priority <= ?`).run(currentClientStatus, currentClientPriority, priority);
+    }
+  }
+  //CASE 2: different status
+  else if(currentClientStatus !== status){
+    //incrementing the following client of the new status
+    db.prepare(`UPDATE clients SET priority = priority + 1 WHERE status = ? AND priority >= ?`).run(status, priority);
+    //decrementing the  client of the current status
+    db.prepare(`UPDATE clients SET priority = priority - 1 WHERE status = ? AND priority > ?`).run(currentClientStatus, currentClientPriority);
+  }
   /* ---------- Update code below ----------*/
-
-
-
-  return res.status(200).send(clients);
+  db.prepare(`UPDATE clients SET status=?, priority=? WHERE id = ?`).run(status, priority, id);
+  return res.status(200).send(db.prepare(`SELECT * FROM clients WHERE id = ?`).get(id));
 });
 
 app.listen(3001);
